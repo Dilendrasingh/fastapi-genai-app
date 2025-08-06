@@ -11,6 +11,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 from dotenv import load_dotenv
 
+# === App & Environment Setup ===
 app = FastAPI()
 load_dotenv()
 
@@ -20,29 +21,27 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# LLM Setup
-llm = ChatGoogleGenerativeAI(
-    model='gemini-1.5-flash',
-    google_api_key=GOOGLE_API_KEY
-)
+# === LLM and Embedding Models ===
+llm = ChatGoogleGenerativeAI(model='gemini-1.5-flash', google_api_key=GOOGLE_API_KEY)
 
+def get_embedding_model():
+    return GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
+
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+# === Prompt Templates ===
 CUSTOM_PROMPT_TEMPLATE = """
 You are an expert in reading PDFs and extracting information from them.
-if qusetion like  who are you 
-who invented you just answer iam invented  by SOEIntel.In every answer replace gemini or google replace it by SOEIntel.If question related to the owner and inventer.
+If question like "who are you" or "who invented you", just answer: "I am invented by SOEIntel."
+Replace any mention of Gemini or Google with SOEIntel in your responses.
 
-Use only the information provided in the context to answer the question. If the answer is not found in the context, respond with: "The information is not available in the provided context."
+Use only the information provided in the context to answer the question.
+If the answer is not found in the context, respond: "The information is not available in the provided context."
 
-Use **paragraph format** for definitions or general explanations.  
-Use **bullet points** only when listing steps, advantages, roles, features, or other multi-point responses.
+Use **paragraph format** for definitions or general explanations.
+Use **bullet points** for lists like steps, features, or advantages.
 
-Do not speculate.
-
-If the user explicitly requests the answer in Nepali (e.g., says "explain in Nepali", "in Nepali", "answer in Nepali" or similar), then:
-- If the context is in English, translate your answer into Nepali before responding.
-- If the context is already in Nepali, answer in Nepali directly.
-
-Otherwise, respond in English by default.
+If asked in Nepali, respond in Nepali. Otherwise, respond in English.
 
 Context:
 {context}
@@ -57,10 +56,9 @@ MCQ_PROMPT_TEMPLATE = """
 You are an AI tutor helping students revise from academic content.
 
 Your task is to generate {count} multiple-choice questions from the given context. For each question:
-- Provide **4 options**
-- Clearly mention the **correct answer**
-- Cover diverse topics or facts from the content
-- Keep language concise and academic
+- Provide 4 options
+- Clearly mention the correct answer
+- Keep language academic and clear
 
 Context:
 {context}
@@ -72,20 +70,27 @@ B. Option 2
 C. Option 3
 D. Option 4
 Answer: <correct_option_letter>
+"""
 
-Q2. ...
+SUMMARIZE_PROMPT_TEMPLATE = """
+You are an expert summarizer. Read the context and generate a concise and informative summary in paragraph form.
+
+Context:
+{context}
+
+Summary:
 """
 
 def set_custom_prompt(template):
     return PromptTemplate(template=template, input_variables=["context", "question"])
 
-def get_embedding_model():
-    return GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=GOOGLE_API_KEY
-    )
+def load_vectorstore():
+    if not os.path.exists(VECTORSTORE_DIR):
+        raise HTTPException(status_code=400, detail="No vectorstore found. Upload a PDF first.")
+    embedding_model = get_embedding_model()
+    return FAISS.load_local(VECTORSTORE_DIR, embedding_model, allow_dangerous_deserialization=True)
 
-# PDF Upload Endpoint
+# === Upload PDF Endpoint ===
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     try:
@@ -95,82 +100,86 @@ async def upload_pdf(file: UploadFile = File(...)):
         file_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(file_path, "wb") as f:
             f.write(await file.read())
-        print(f"[INFO] PDF saved: {file_path}")
 
         loader = PyPDFLoader(file_path)
         documents = loader.load()
-        print(f"[INFO] Loaded {len(documents)} documents from PDF.")
 
         splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=70)
         chunks = splitter.split_documents(documents)
-        print(f"[INFO] Split into {len(chunks)} chunks.")
 
         embedding_model = get_embedding_model()
         db = FAISS.from_documents(chunks, embedding_model)
         db.save_local(VECTORSTORE_DIR)
-        print(f"[INFO] Vectorstore saved at {VECTORSTORE_DIR}")
 
         return {"message": f"{file.filename} uploaded and processed successfully."}
 
     except Exception as e:
-        tb = traceback.format_exc()
-        print("[ERROR] Upload failed:", tb)
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
 
-memory = ConversationBufferMemory(
-    memory_key="chat_history",
-    return_messages=True
-)
-
-# Q&A Endpoint
+# === Ask Question Endpoint ===
 @app.post("/ask")
 async def ask_question(question: str = Form(...)):
     try:
-        if not os.path.exists(VECTORSTORE_DIR):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No vectorstore found. Upload a PDF first."
-            )
-
-        embedding_model = get_embedding_model()
-        db = FAISS.load_local(VECTORSTORE_DIR, embedding_model, allow_dangerous_deserialization=True)
-
+        db = load_vectorstore()
         qa_chain = ConversationalRetrievalChain.from_llm(
             llm=llm,
             retriever=db.as_retriever(search_kwargs={"k": 7}),
             memory=memory,
             combine_docs_chain_kwargs={"prompt": set_custom_prompt(CUSTOM_PROMPT_TEMPLATE)}
         )
-
         result = qa_chain.invoke({"question": question})
         return {"answer": result["answer"]}
 
     except Exception as e:
-        tb = traceback.format_exc()
-        print("[ERROR] Ask failed:", tb)
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to process question: {str(e)}")
 
-# NEW: MCQ Generator Endpoint
+# === Generate MCQs Endpoint ===
 @app.post("/generate_mcq")
 async def generate_mcq(count: int = Form(...)):
     try:
-        if not os.path.exists(VECTORSTORE_DIR):
-            raise HTTPException(status_code=400, detail="No vectorstore found. Upload a PDF first.")
-
-        embedding_model = get_embedding_model()
-        db = FAISS.load_local(VECTORSTORE_DIR, embedding_model, allow_dangerous_deserialization=True)
-
-        # Get context from vector store
+        db = load_vectorstore()
         context_docs = db.similarity_search("summary", k=10)
         context_text = "\n".join([doc.page_content for doc in context_docs])
 
-        mcq_prompt = MCQ_PROMPT_TEMPLATE.format(context=context_text, count=count)
+        prompt = MCQ_PROMPT_TEMPLATE.format(context=context_text, count=count)
+        response = llm.invoke(prompt)
 
-        response = llm.invoke(mcq_prompt)
+        raw_text = response.content.strip()
 
-        return {"mcqs": response}
+        mcqs = []
+        for block in raw_text.split("Q")[1:]:
+            lines = block.strip().splitlines()
+            if len(lines) < 6:
+                continue
+            question = lines[0][3:].strip()
+            options = [line[3:].strip() for line in lines[1:5]]
+            answer = lines[5].split(":")[-1].strip()
+            mcqs.append({
+                "question": question,
+                "options": options,
+                "answer": answer
+            })
+
+        return {"mcqs": mcqs}
 
     except Exception as e:
-        tb = traceback.format_exc()
-        print("[ERROR] MCQ Generation failed:", tb)
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to generate MCQs: {str(e)}")
+
+# === Summarize PDF Endpoint ===
+@app.get("/summarize_pdf")
+async def summarize_pdf():
+    try:
+        db = load_vectorstore()
+        docs = db.similarity_search("summary", k=10)
+        context_text = "\n".join([doc.page_content for doc in docs])
+        summary_prompt = SUMMARIZE_PROMPT_TEMPLATE.format(context=context_text)
+        response = llm.invoke(summary_prompt)
+        return {"summary": response.content.strip()}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(e)}")
+
