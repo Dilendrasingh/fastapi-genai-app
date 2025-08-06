@@ -6,3 +6,5 @@ __pycache__/
 .env.*
 venv/
 .idea/
+app.py
+app1.py
