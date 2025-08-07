@@ -1,7 +1,7 @@
 import os
 import traceback
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -11,21 +11,45 @@ from langchain_core.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 from dotenv import load_dotenv
 
-# === App & Environment Setup ===
-app = FastAPI()
+# === Load .env ===
 load_dotenv()
 
+# === FastAPI app ===
+app = FastAPI()
+
+# === CORS Configuration ===
+origins = [
+    "http://localhost:5173",
+    "https://soeintelligence.vercel.app",
+    "https://soeintel.vercel.app"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# === Constants & Setup ===
 UPLOAD_DIR = "uploaded_pdfs"
 VECTORSTORE_DIR = "vectorstore/db_faiss"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# === LLM and Embedding Models ===
-llm = ChatGoogleGenerativeAI(model='gemini-1.5-flash', google_api_key=GOOGLE_API_KEY)
+# === LLM and Embeddings ===
+llm = ChatGoogleGenerativeAI(
+    model='gemini-1.5-flash',
+    google_api_key=GOOGLE_API_KEY
+)
 
 def get_embedding_model():
-    return GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
+    return GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001",
+        google_api_key=GOOGLE_API_KEY
+    )
 
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
@@ -90,7 +114,7 @@ def load_vectorstore():
     embedding_model = get_embedding_model()
     return FAISS.load_local(VECTORSTORE_DIR, embedding_model, allow_dangerous_deserialization=True)
 
-# === Upload PDF Endpoint ===
+# === Endpoint: Upload PDF ===
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     try:
@@ -117,7 +141,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
 
-# === Ask Question Endpoint ===
+# === Endpoint: Ask Question ===
 @app.post("/ask")
 async def ask_question(question: str = Form(...)):
     try:
@@ -135,7 +159,7 @@ async def ask_question(question: str = Form(...)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to process question: {str(e)}")
 
-# === Generate MCQs Endpoint ===
+# === Endpoint: Generate MCQs ===
 @app.post("/generate_mcq")
 async def generate_mcq(count: int = Form(...)):
     try:
@@ -168,7 +192,7 @@ async def generate_mcq(count: int = Form(...)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to generate MCQs: {str(e)}")
 
-# === Summarize PDF Endpoint ===
+# === Endpoint: Summarize PDF ===
 @app.get("/summarize_pdf")
 async def summarize_pdf():
     try:
@@ -182,4 +206,3 @@ async def summarize_pdf():
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(e)}")
-
