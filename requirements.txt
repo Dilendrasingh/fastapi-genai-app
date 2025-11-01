@@ -3,8 +3,10 @@ uvicorn
 python-multipart
 langchain
 langchain-community
+langchain-core
+langchain-text-splitters
 langchain-google-genai
 google-generativeai
 pypdf
 faiss-cpu
- python-dotenv
+python-dotenv
