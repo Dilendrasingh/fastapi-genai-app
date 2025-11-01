@@ -1,11 +1,10 @@
 fastapi
 uvicorn
 python-multipart
-langchain
-langchain-community
-langchain-core
-langchain-text-splitters
-langchain-google-genai
+langchain==0.1.16
+langchain-core==0.1.42
+langchain-community==0.0.33
+langchain-google-genai==0.0.12
 google-generativeai
 pypdf
 faiss-cpu
